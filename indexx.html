@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>LETS MAKE | Premium Cosmetics</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* --- NEW COLOR THEME --- */
+        :root {
+            --primary-teal: #00796B; /* Deep Teal/Emerald */
+            --secondary-gold: #FFB300; /* Warm Gold for accents */
+            --dark-neutral: #263238; /* Dark Charcoal/Navy */
+            --light-bg: #F9F9F9; /* Creamy light background */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--light-bg);
+            color: var(--dark-neutral);
+            scroll-behavior: smooth;
+        }
+        .hero-title {
+            font-family: 'Playfair Display', serif;
+        }
+        /* Primary button uses Teal */
+        .btn-primary {
+            background-color: var(--primary-teal);
+            transition: all 0.3s ease;
+        }
+        .btn-primary:hover {
+            background-color: #005F55; /* Darker Teal */
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0, 121, 107, 0.4);
+        }
+        /* Secondary text color uses Teal */
+        .text-primary-accent {
+            color: var(--primary-teal);
+        }
+        .product-card {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .product-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
+        }
+        /* Custom scrollbar for chat/cart */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(0, 121, 107, 0.5); /* Teal scrollbar */
+            border-radius: 4px;
+        }
+        .chat-bubble {
+            max-width: 80%;
+            padding: 10px 15px;
+            border-radius: 18px;
+        }
+    </style>
+
+    <!-- Google tag (gtag.js) - Replace GA_MEASUREMENT_ID with your ID -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=GA_MEASUREMENT_ID"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'GA_MEASUREMENT_ID');
+    </script>
+</head>
+<body class="overflow-x-hidden">
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, query, setDoc, updateDoc, deleteDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase variables (provided by canvas environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        setLogLevel('Debug');
+
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+        window.isAuthReady = false;
+        window.userId = null;
+        window.cart = [];
+
+        // --- CURRENCY SETTINGS ---
+        const INR_RATE = 83.0; // Conversion rate: 1 USD = 83 INR
+        window.INR_RATE = INR_RATE;
+        // --- END CURRENCY SETTINGS ---
+
+        // Authentication Logic
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                window.userId = user.uid;
+            } else {
+                // Sign in anonymously if no token is available
+                try {
+                    if (initialAuthToken) {
+                        const userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                        window.userId = userCredential.user.uid;
+                    } else {
+                        const userCredential = await signInAnonymously(auth);
+                        window.userId = userCredential.user.uid;
+                    }
+                } catch (error) {
+                    console.error("Firebase Auth failed:", error);
+                    // Fallback to random ID if authentication fails
+                    window.userId = `guest-${crypto.randomUUID()}`;
+                }
+            }
+
+            window.isAuthReady = true;
+            console.log("Auth Ready. User ID:", window.userId);
+
+            // Once authenticated, start listening to the cart data
+            if (window.userId) {
+                initCartListener();
+            }
+        });
+
+        const initCartListener = () => {
+            const cartRef = collection(db, 'artifacts', appId, 'users', window.userId, 'cartItems');
+            const q = query(cartRef);
+
+            onSnapshot(q, (snapshot) => {
+                const updatedCart = [];
+                snapshot.forEach((doc) => {
+                    updatedCart.push({ id: doc.id, ...doc.data() });
+                });
+                window.cart = updatedCart;
+                updateCartUI();
+                console.log("Cart updated from Firestore:", updatedCart);
+            }, (error) => {
+                console.error("Error listening to cart changes:", error);
+            });
+        };
+
+        const updateCartUI = () => {
+            const cartContent = document.getElementById('cart-content');
+            const cartTotalUSDElement = document.getElementById('cart-total-usd');
+            const cartTotalINRElement = document.getElementById('cart-total-inr');
+            let totalUSD = 0;
+
+            if (!cartContent) return;
+
+            cartContent.innerHTML = ''; // Clear previous content
+
+            if (window.cart.length === 0) {
+                cartContent.innerHTML = '<p class="text-center text-gray-500 py-8">Your cart is empty. Time to glow!</p>';
+            } else {
+                window.cart.forEach(item => {
+                    const itemTotalUSD = item.price * item.quantity;
+                    const itemTotalINR = itemTotalUSD * window.INR_RATE;
+                    totalUSD += itemTotalUSD;
+
+                    const itemElement = document.createElement('div');
+                    itemElement.className = 'flex items-center justify-between p-3 border-b border-gray-200';
+                    itemElement.innerHTML = `
+                        <div class="flex-grow">
+                            <p class="font-semibold text-sm">${item.name}</p>
+                            <p class="text-xs text-gray-500">$${item.price.toFixed(2)} x ${item.quantity}</p>
+                        </div>
+                        <div class="font-bold text-sm text-primary-accent mr-4 text-right">
+                             <p>$${itemTotalUSD.toFixed(2)}</p>
+                             <p class="text-xs text-gray-600">₹${itemTotalINR.toFixed(0)}</p>
+                        </div>
+                        <button onclick="window.removeItemFromCart('${item.id}')" class="text-red-500 hover:text-red-700 p-1 rounded-full bg-red-100">
+                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+                        </button>
+                    `;
+                    cartContent.appendChild(itemElement);
+                });
+            }
+
+            const totalINR = totalUSD * window.INR_RATE;
+
+            cartTotalUSDElement.textContent = totalUSD.toFixed(2);
+            cartTotalINRElement.textContent = totalINR.toFixed(0);
+            const countEl = document.getElementById('cart-count');
+            if (countEl) {
+                countEl.textContent = window.cart.reduce((sum, item) => sum + item.quantity, 0);
+            }
+        };
+
+        window.addItemToCart = async (productId) => {
+            if (!window.isAuthReady || !window.userId) {
+                console.error("Authentication not ready. Cannot add to cart.");
+                return;
+            }
+
+            const product = window.products.find(p => p.id === productId);
+            if (!product) return;
+
+            const cartItemRef = doc(db, 'artifacts', appId, 'users', window.userId, 'cartItems', productId);
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const cartItemDoc = await transaction.get(cartItemRef);
+
+                    if (cartItemDoc.exists()) {
+                        // Item exists, increase quantity
+                        const newQuantity = cartItemDoc.data().quantity + 1;
+                        transaction.update(cartItemRef, { quantity: newQuantity });
+                        showToast(`Added another ${product.name}!`, 'success');
+                    } else {
+                        // Item does not exist, create new document
+                        transaction.set(cartItemRef, {
+                            productId: product.id,
+                            name: product.name,
+                            // Store only the base USD price
+                            price: product.priceUSD,
+                            quantity: 1,
+                        });
+                        showToast(`Added ${product.name} to cart!`, 'success');
+                    }
+                });
+            } catch (error) {
+                console.error("Transaction failed: ", error);
+                showToast("Failed to add item. Check console.", 'error');
+            }
+        };
+
+        window.removeItemFromCart = async (itemId) => {
+            if (!window.isAuthReady || !window.userId) {
+                console.error("Authentication not ready. Cannot remove from cart.");
+                return;
+            }
+
+            const cartItemRef = doc(db, 'artifacts', appId, 'users', window.userId, 'cartItems', itemId);
+            const currentItem = window.cart.find(item => item.id === itemId);
+
+            if (!currentItem) return;
+
+            try {
+                 await runTransaction(db, async (transaction) => {
+                    const cartItemDoc = await transaction.get(cartItemRef);
+
+                    if (!cartItemDoc.exists()) return;
+
+                    const currentQuantity = cartItemDoc.data().quantity;
+
+                    if (currentQuantity > 1) {
+                        // Decrease quantity
+                        const newQuantity = currentQuantity - 1;
+                        transaction.update(cartItemRef, { quantity: newQuantity });
+                        showToast(`Removed one ${currentItem.name}.`, 'warning');
+                    } else {
+                        // Delete document if quantity is 1
+                        transaction.delete(cartItemRef);
+                        showToast(`${currentItem.name} fully removed from cart.`, 'warning');
+                    }
+                });
+            } catch (error) {
+                console.error("Error removing item: ", error);
+                showToast("Failed to remove item. Check console.", 'error');
+            }
+        };
+    </script>
+
+    <!-- Global JS and Data -->
+    <script>
+        // Product Data (5 items)
+        // Note: Prices are stored as priceUSD, and INR price is calculated dynamically
+        const productsRaw = [
+            { id: 'p01', name: 'Velvet Matte Lipstick', priceUSD: 18.50, description: 'Long-lasting, non-drying formula in 10 shades.', image: 'https://raw.githubusercontent.com/MayurSaproo/letsmakewebsite-/main/imgg.png' },
+            { id: 'p02', name: 'Flawless Liquid Foundation', priceUSD: 28.00, description: '24-hour wear, medium-to-full coverage.', image: 'https://raw.githubusercontent.com/MayurSaproo/letsmakewebsite-/main/Generated%20Image%20November%2012%2C%202025%20-%2012_49AM.png' },
+            { id: 'p03', name: 'Glow Up Highlighter', priceUSD: 22.99, description: 'A blinding shimmer powder for cheekbones.', image: 'https://raw.githubusercontent.com/MayurSaproo/letsmakewebsite-/main/Generated%20Image%20November%2012%2C%202025%20-%201_08AM.png' },
+            { id: 'p04', name: 'Smoky Eyeshadow Palette', priceUSD: 35.00, description: '12 versatile shades for day and night looks.', image: 'https://raw.githubusercontent.com/MayurSaproo/letsmakewebsite-/main/Generated%20Image%20November%2012%2C%202025%20-%201_12AM.png' },
+            { id: 'p05', name: 'Precision Liquid Eyeliner', priceUSD: 15.00, description: 'Waterproof formula with an ultra-fine tip.', image: 'https://raw.githubusercontent.com/MayurSaproo/letsmakewebsite-/main/Generated%20Image%20November%2012%2C%202025%20-%201_15AM.png' },
+        ];
+
+        // Calculate INR price for all products
+        const products = productsRaw.map(p => ({
+            ...p,
+            priceUSD: p.priceUSD,
+            priceINR: Math.round(p.priceUSD * (window.INR_RATE || 83)) // Use Math.round for cleaner rupee display
+        }));
+
+        window.products = products; // Make products global for use in Firestore logic
+
+        // --- UI TOGGLES ---
+        function toggleCart() {
+            document.getElementById('cart-sidebar').classList.toggle('translate-x-full');
+            document.getElementById('chat-modal').classList.add('hidden'); // Close chat if open
+        }
+
+        function toggleChat() {
+            document.getElementById('chat-modal').classList.toggle('hidden');
+            document.getElementById('cart-sidebar').classList.add('translate-x-full'); // Close cart if open
+            if (!document.getElementById('chat-modal').classList.contains('hidden')) {
+                document.getElementById('chat-input').focus();
+            }
+        }
+
+        function scrollToSection(id) {
+            document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // --- TOAST NOTIFICATIONS ---
+        function showToast(message, type) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'fixed bottom-20 left-1/2 -translate-x-1/2 p-3 rounded-xl shadow-lg transition-opacity duration-300 z-50';
+
+            if (type === 'success') {
+                toast.classList.add('bg-green-500', 'text-white');
+            } else if (type === 'warning') {
+                 toast.classList.add('bg-yellow-500', 'text-white');
+            } else {
+                 toast.classList.add('bg-red-500', 'text-white');
+            }
+
+            toast.classList.remove('opacity-0', 'pointer-events-none');
+            toast.classList.add('opacity-100');
+
+            setTimeout(() => {
+                toast.classList.remove('opacity-100');
+                toast.classList.add('opacity-0', 'pointer-events-none');
+            }, 3000);
+        }
+
+        // --- CHATBOT LOGIC (Gemini API) ---
+        const apiKey = ""; // Will be auto-provided by the Canvas environment
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        // Chatbot state management
+        let userName = null;
+        let chatState = 'awaiting_name'; // States: 'awaiting_name', 'ready'
+
+        let chatHistory = [{
+            role: "model",
+            parts: [{ text: "Hello! I'm Lexi, your LETS MAKE beauty expert. Before we start, what's your name?" }]
+        }];
+
+        function getIconSvg(name) {
+            const icons = {
+                'instagram': '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-instagram"><rect width="20" height="20" x="2" y="2" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" x2="17.5" y1="6.5" y2="6.5"/></svg>',
+                'twitter': '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-twitter"><path d="M22 4s-.7 2.1-2 3.4c1.6 10-9.4 17.3-18 11.6 2.2.1 4.4-.6 6-2 5.7-4.4 7.5-12.8 1.4-18C5 4 2 4.5 2 4.5"/></svg>',
+                'tiktok': '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-tiktok"><path d="M21 8a2 2 0 0 0-2-2h-3v7.58a6 6 0 1 1-5.65-8.87V5a8 8 0 1 0 13 8h-3V8z"/></svg>'
+            };
+            return icons[name] || '';
+        }
+
+        async function sendChat() {
+            const inputElement = document.getElementById('chat-input');
+            const message = inputElement.value.trim();
+            if (!message) return;
+
+            inputElement.value = '';
+
+            const chatBody = document.getElementById('chat-body');
+
+            // 1. Display User Message
+            const userBubble = document.createElement('div');
+            userBubble.className = 'flex justify-end mb-4';
+            userBubble.innerHTML = `<div class="chat-bubble text-white" style="background-color: var(--secondary-gold);">${message}</div>`;
+            chatBody.appendChild(userBubble);
+            chatBody.scrollTop = chatBody.scrollHeight;
+
+            // 2. Handle State: Awaiting Name
+            if (chatState === 'awaiting_name') {
+                userName = message.split(' ')[0]; // Use the first word as the name
+                chatState = 'ready';
+
+                const modelReply = `That's a lovely name, ${userName}! It's great to meet you. I'm ready to answer any questions you have about makeup, skincare, or the LETS MAKE collection. What can I help you with first?`;
+
+                // Add model reply to UI and history (without API call)
+                const modelBubble = document.createElement('div');
+                modelBubble.className = 'flex justify-start mb-4';
+                modelBubble.innerHTML = `<div class="chat-bubble bg-white border border-gray-200">${modelReply}</div>`;
+                chatBody.appendChild(modelBubble);
+                chatHistory.push({ role: "model", parts: [{ text: modelReply }] });
+
+                chatBody.scrollTop = chatBody.scrollHeight;
+                return; // Stop here, no API call needed for name greeting
+            }
+
+            // 3. Handle State: Ready (Normal API interaction)
+
+            // Add user message to history
+            chatHistory.push({ role: "user", parts: [{ text: message }] });
+
+            // Generate personalized system instruction
+            const personalizedSystemInstruction = `You are 'Lexi', a friendly, expert makeup and beauty assistant for the brand 'LETS MAKE'. Your client's name is ${userName}. Greet them personally by name and answer questions concisely about makeup products, skincare routines, and beauty tips. Keep your replies encouraging and professional.`;
+
+            // Add loading indicator
+            const loaderBubble = document.createElement('div');
+            loaderBubble.id = 'loader-bubble';
+            loaderBubble.className = 'flex justify-start mb-4';
+            loaderBubble.innerHTML = `<div class="chat-bubble bg-gray-200 text-gray-700">Thinking...</div>`;
+            chatBody.appendChild(loaderBubble);
+            chatBody.scrollTop = chatBody.scrollHeight;
+
+            document.getElementById('chat-send-btn').disabled = true;
+
+            try {
+                // Await the API (or fallback) response
+                const responseText = await fetchGeminiResponse(chatHistory, personalizedSystemInstruction);
+
+                // Remove loading indicator
+                loaderBubble.remove();
+                document.getElementById('chat-send-btn').disabled = false;
+
+                // Add model response to UI and history
+                const modelBubble = document.createElement('div');
+                modelBubble.className = 'flex justify-start mb-4';
+                modelBubble.innerHTML = `<div class="chat-bubble bg-white border border-gray-200">${responseText}</div>`;
+                chatBody.appendChild(modelBubble);
+                chatHistory.push({ role: "model", parts: [{ text: responseText }] });
+            } catch (error) {
+                console.error("Chatbot API Error:", error);
+                // Ensure loader and button are reset even on error
+                const loader = document.getElementById('loader-bubble');
+                if (loader) loader.remove();
+                document.getElementById('chat-send-btn').disabled = false;
+
+                const errorBubble = document.createElement('div');
+                errorBubble.className = 'flex justify-start mb-4';
+                errorBubble.innerHTML = `<div class="chat-bubble bg-red-100 text-red-600">Sorry, I had trouble connecting. Please try again.</div>`;
+                chatBody.appendChild(errorBubble);
+            }
+            chatBody.scrollTop = chatBody.scrollHeight;
+        }
+
+        /**
+         * fetchGeminiResponse
+         * - Tries to call the external Gemini endpoint when apiKey is present.
+         * - If apiKey is not available (empty), falls back to a local helpful echo response so the chat remains responsive.
+         *
+         * NOTE: This fallback preserves the rest of your chat flow and avoids changing the rest of your code.
+         */
+        async function fetchGeminiResponse(history, systemPrompt, maxRetries = 5) {
+            // Fallback when apiKey not provided by environment — ensures chat responds in dev/local/test environments.
+            if (!apiKey || apiKey.trim() === "") {
+                // Find last user message
+                const lastUser = [...history].reverse().find(h => h.role === 'user');
+                const userText = lastUser?.parts?.[0]?.text || '';
+
+                // Simple, friendly fallback reply that still feels useful
+                const fallback = userName
+                    ? `Hi ${userName}! I can't reach the external assistant right now, but I can help: "${userText}". For example, if you're asking about shades, ingredients, or application tips, tell me which product and I'll give a short recommendation.`
+                    : `I can't reach the external assistant right now. You asked: "${userText}". Please try again later or rephrase your question.`;
+
+                return fallback;
+            }
+
+            const payload = {
+                contents: history,
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                }
+            };
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+
+                if (attempt > 0) {
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.status === 429 && attempt < maxRetries - 1) {
+                        // Rate limit error, continue to next attempt
+                        continue;
+                    }
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (text) {
+                        return text;
+                    } else {
+                        // Throw if response is okay but missing text content
+                        throw new Error("Invalid response structure from API. Text content missing.");
+                    }
+
+                } catch (error) {
+                    if (attempt === maxRetries - 1) {
+                        throw error; // Throw on final attempt
+                    }
+                    // Otherwise retry silently
+                }
+            }
+            throw new Error("Max retries reached.");
+        }
+
+    </script>
+
+    <!-- Navigation Bar -->
+    <header class="sticky top-0 z-40 bg-white shadow-md">
+        <div class="container mx-auto px-4 py-4 flex justify-between items-center">
+            <h1 class="text-3xl font-bold hero-title text-primary-accent">LETS MAKE</h1>
+            <nav class="hidden md:flex space-x-8 text-lg font-semibold">
+                <a href="#main" onclick="scrollToSection('main')" class="text-dark-neutral hover:text-primary-accent transition duration-200">MAIN</a>
+                <a href="#about" onclick="scrollToSection('about')" class="text-dark-neutral hover:text-primary-accent transition duration-200">ABOUT</a>
+                <a href="#products" onclick="scrollToSection('products')" class="text-dark-neutral hover:text-primary-accent transition duration-200">PRODUCTS</a>
+                <a href="#contact" onclick="scrollToSection('contact')" class="text-dark-neutral hover:text-primary-accent transition duration-200">CONTACT US</a>
+            </nav>
+            <div class="flex items-center space-x-4">
+                <button onclick="toggleCart()" class="relative p-2 rounded-full bg-light-bg hover:bg-gray-200 transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shopping-cart"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.72a2 2 0 0 0 2-1.58L23 6H6"/></svg>
+                    <span id="cart-count" class="absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white transform translate-x-1/2 -translate-y-1/2 bg-red-500 rounded-full">0</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main id="main">
+        <!-- Hero Section (Amazing Landing Page) -->
+        <section class="relative h-[80vh] flex items-center justify-center overflow-hidden bg-cover bg-center"
+                 style="background-image: url('Img/img.jpg'); background-color: var(--primary-teal);">
+            <!-- Overlay -->
+            <div class="absolute inset-0 bg-black opacity-30"></div>
+
+            <div class="relative z-10 text-center text-white p-6">
+                <h2 class="text-6xl md:text-8xl hero-title font-extrabold mb-4 animate-fadeIn">Unveil Your True Radiance.</h2>
+                <p class="text-xl md:text-2xl font-light mb-8">Premium quality, cruelty-free makeup essentials.</p>
+                <button onclick="scrollToSection('products')" class="btn-primary text-white font-bold py-3 px-8 rounded-full shadow-lg">SHOP THE COLLECTION</button>
+            </div>
+        </section>
+
+        <!-- About Section -->
+        <section id="about" class="container mx-auto px-4 py-16 md:py-24">
+            <h2 class="text-4xl hero-title font-bold text-center mb-12">Our Philosophy</h2>
+            <div class="max-w-4xl mx-auto text-lg text-gray-700 leading-relaxed text-center">
+                <p class="mb-6">LETS MAKE is committed to the development of high-performance color cosmetics that elevate personal confidence. Our product philosophy centers on luxurious user experience, cruelty-free certification, and a conscientious approach to ingredient sourcing. We utilize effective, meticulously selected ingredients to ensure our formulas are beneficial for both the wearer and the environment.</p>
+                <p class="font-semibold text-primary-accent">#LETSMAKE</p>
+            </div>
+        </section>
+
+        <!-- Products Section -->
+        <section id="products" class="container mx-auto px-4 py-16 md:py-24 bg-white rounded-xl shadow-lg">
+            <h2 class="text-4xl hero-title font-bold text-center mb-16">The Full Collection</h2>
+
+            <!-- BEST LAYOUT FOR 5 CARDS:
+                 - Mobile: 1 column
+                 - Small screens (sm): 2 columns
+                 - Medium (md): 3 columns
+                 - Large (lg): 4 columns
+                 - XL: 5 columns (all five in one row)
+                 This yields a pleasant distribution across sizes for exactly five items.
+            -->
+            <div id="product-list-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-8 max-w-7xl mx-auto">
+                <!-- Product cards will be injected here by renderProducts() -->
+            </div>
+        </section>
+
+        <!-- Contact Us Section (Footer) -->
+        <footer id="contact" class="bg-dark-neutral text-white py-16">
+            <div class="container mx-auto px-4 grid grid-cols-1 md:grid-cols-3 gap-8 text-center md:text-left">
+                <div>
+                    <h3 class="text-2xl font-bold hero-title mb-4">LETS MAKE</h3>
+                    <p class="text-gray-400">Where beauty meets confidence.</p>
+                </div>
+                <div>
+                    <h4 class="text-xl font-semibold mb-4 text-primary-accent">Contact Details</h4>
+                    <p class="text-gray-300">Email: support@letsmake.com</p>
+                    <p class="text-gray-300">Phone: +1 (555) MAKEUP</p>
+                    <p class="text-gray-300">Address: 123 Beauty Blvd, CA 90210</p>
+                </div>
+                <div>
+                    <h4 class="text-xl font-semibold mb-4 text-primary-accent">Connect With Us</h4>
+                    <div class="flex justify-center md:justify-start space-x-6">
+                        <a href="#" class="text-gray-300 hover:text-primary-accent transition duration-200 p-2 rounded-full border border-gray-500 hover:border-primary-accent" target="_blank" aria-label="Instagram">
+                            <script>document.write(getIconSvg('instagram'));</script>
+                        </a>
+                        <a href="#" class="text-gray-300 hover:text-primary-accent transition duration-200 p-2 rounded-full border border-gray-500 hover:border-primary-accent" target="_blank" aria-label="Twitter">
+                            <script>document.write(getIconSvg('twitter'));</script>
+                        </a>
+                        <a href="#" class="text-gray-300 hover:text-primary-accent transition duration-200 p-2 rounded-full border border-gray-500 hover:border-primary-accent" target="_blank" aria-label="TikTok">
+                            <script>document.write(getIconSvg('tiktok'));</script>
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-12 text-center text-gray-500 text-sm">
+                &copy; 2025 LETS MAKE Cosmetics. All Rights Reserved.
+            </div>
+        </footer>
+    </main>
+
+    <!-- Cart Sidebar -->
+    <div id="cart-sidebar" class="fixed top-0 right-0 w-full md:w-96 h-full bg-white shadow-2xl z-50 transform translate-x-full transition-transform duration-300 flex flex-col">
+        <div class="flex justify-between items-center p-5 border-b border-gray-200">
+            <h3 class="text-2xl font-bold text-primary-accent">Your Cart</h3>
+            <button onclick="toggleCart()" class="text-gray-500 hover:text-dark-neutral p-1">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <!-- Cart Items -->
+        <div id="cart-content" class="flex-grow overflow-y-auto custom-scrollbar">
+            <!-- Cart items populated by JS -->
+        </div>
+
+        <!-- Cart Footer / Total -->
+        <div class="p-5 border-t border-gray-200">
+            <div class="text-xl font-bold mb-4">
+                <div class="flex justify-between items-center">
+                    <span>Subtotal:</span>
+                    <div class="text-right">
+                        <span>$<span id="cart-total-usd">0.00</span></span>
+                        <p class="text-sm font-normal text-gray-600">₹<span id="cart-total-inr">0</span> approx.</p>
+                    </div>
+                </div>
+            </div>
+            <button class="w-full btn-primary text-white font-bold py-3 rounded-xl shadow-lg">
+                Proceed to Checkout
+            </button>
+        </div>
+    </div>
+
+    <!-- Chatbot Floating Button -->
+    <button onclick="toggleChat()" class="fixed bottom-4 right-4 md:bottom-8 md:right-8 z-30 p-4 rounded-full btn-primary shadow-xl hover:shadow-2xl transition duration-300">
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
+    </button>
+
+    <!-- Chatbot Modal -->
+    <div id="chat-modal" class="hidden fixed bottom-20 right-4 md:bottom-24 md:right-8 z-30 w-full max-w-sm h-[60vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden transition-all duration-300">
+        <div class="p-4 bg-primary-accent text-white flex justify-between items-center" style="background-color: var(--primary-teal);">
+            <h3 class="text-lg font-bold">Lexi - Beauty Expert</h3>
+            <button onclick="toggleChat()" class="p-1 hover:bg-white hover:bg-opacity-20 rounded-full transition">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <!-- Chat Body -->
+        <div id="chat-body" class="flex-grow p-4 space-y-4 overflow-y-auto custom-scrollbar bg-light-bg">
+            <div class="flex justify-start mb-4">
+                <div class="chat-bubble bg-white border border-gray-200">Hello! I'm Lexi, your LETS MAKE beauty expert. Before we start, what's your name?</div>
+            </div>
+        </div>
+
+        <!-- Chat Input -->
+        <div class="p-4 border-t border-gray-200 flex">
+            <input type="text" id="chat-input" placeholder="Enter your name or ask a question..."
+                   class="flex-grow p-3 border border-gray-300 rounded-l-xl focus:ring-primary-accent focus:border-primary-accent focus:outline-none"
+                   onkeypress="if(event.key === 'Enter') sendChat()">
+            <button id="chat-send-btn" onclick="sendChat()" class="text-white p-3 rounded-r-xl transition duration-200" style="background-color: var(--primary-teal); hover:background-color: #005F55;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast" class="opacity-0 pointer-events-none"></div>
+
+    <script>
+        // Function to dynamically render product cards
+        function renderProducts() {
+            const productList = document.getElementById('product-list-container');
+            let html = '';
+
+            products.forEach(product => {
+                html += `
+                    <div class="product-card bg-white p-4 rounded-xl shadow-lg flex flex-col">
+                        <div class="relative overflow-hidden rounded-lg mb-4">
+                            <img src="${product.image}" alt="${product.name}" class="w-full h-48 object-cover transition-transform duration-300 hover:scale-[1.02] rounded-lg"
+                                 onerror="this.onerror=null;this.src='https://placehold.co/400x400/00796B/FFFFFF?text=${encodeURIComponent(product.name)}'">
+                        </div>
+                        <h3 class="font-semibold text-lg mb-1">${product.name}</h3>
+                        <p class="text-sm text-gray-500 mb-3 flex-grow">${product.description}</p>
+                        <div class="flex flex-col mt-auto">
+                            <div class="text-xl font-bold text-primary-accent">
+                                $${product.priceUSD.toFixed(2)}
+                            </div>
+                            <div class="text-sm font-medium text-gray-600 mb-4">
+                                ₹${product.priceINR} (approx)
+                            </div>
+                            <button onclick="window.addItemToCart('${product.id}')" class="btn-primary text-white text-sm font-medium py-2 px-4 rounded-full hover:shadow-md flex items-center justify-center space-x-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                                <span>Add to Cart</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            productList.innerHTML = html;
+        }
+
+        // Call render function on load
+        window.onload = () => {
+            if (window.products) {
+                renderProducts();
+            }
+        };
+    </script>
+</body>
+</html>
